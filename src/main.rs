@@ -47,7 +47,79 @@ use windows::{
 //];
 
 /// Compressed version
-const DLLS: [(&str, &[u8]); 23] = [
+const DLLS: [(&str, &[u8]); 24] = [
+    (
+        "api-ms-win-core-file-l1-2-0.dll",
+        include_bytes!("..dll/api-ms-win-core-file-l1-2-0.dll"),
+    ),
+    (
+        "api-ms-win-core-file-l2-1-0.dll",
+        include_bytes!("..dll/api-ms-win-core-file-l2-1-0.dll"),
+    ),
+    (
+        "api-ms-win-core-localization-l1-2-0.dll",
+        include_bytes!("..dll/api-ms-win-core-localization-l1-2-0.dll"),
+    ),
+    (
+        "api-ms-win-core-processthreads-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-core-processthreads-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-core-sync-l1-2-0.dll",
+        include_bytes!("..dll/api-ms-win-core-sync-l1-2-0.dll"),
+    ),
+    (
+        "api-ms-win-core-timezone-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-core-timezone-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-convert-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-environment-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-environment-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-filesystem-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-filesystem-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-heap-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-locale-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-math-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-math-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-multibyte-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-multibyte-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-runtime-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-stdio-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-string-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-string-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-time-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-time-l1-1-0.dll"),
+    ),
+    (
+        "api-ms-win-crt-utility-l1-1-0.dll",
+        include_bytes!("..dll/api-ms-win-crt-utility-l1-1-0.dll"),
+    ),
     (
         "avcodec-61.dll",
         include_bytes!("../dll/compress/avcodec-61.dll"),
@@ -120,14 +192,20 @@ const DLLS: [(&str, &[u8]); 23] = [
         "swscale-8.dll",
         include_bytes!("../dll/compress/swscale-8.dll"),
     ),
+    ("SDL2.dll", include_bytes!("../dll/SDL2.dll")),
+    ("zlib1.dll", include_bytes!("../dll/zlib1.dll")),
     (
-        "SDL2.dll",
-        include_bytes!("../dll/SDL2.dll"),
+        "vcruntime140.dll",
+        include_bytes!("../dll/vcruntime140.dll"),
     ),
     (
-        "zlib.dll",
-        include_bytes!("../dll/zlib1.dll"),
-    )
+        "vcruntime140_1.dll",
+        include_bytes!("../dll/vcruntime140_1.dll"),
+    ),
+    (
+        "vcruntime140_threads.dll",
+        include_bytes!("../dll/vcruntime140_threads.dll"),
+    ),
 ];
 
 fn embed_dll_load() -> std::io::Result<PathBuf> {

@@ -1,0 +1,5 @@
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C",
+    "link-args=/DELAYLOAD:avcodec-61.dll /DELAYLOAD:avdevice-61.dll /DELAYLOAD:avfilter-10.dll /DELAYLOAD:avformat-61.dll /DELAYLOAD:avutil-59.dll /DELAYLOAD:brotlicommon.dll /DELAYLOAD:brotlidec.dll /DELAYLOAD:brotlienc.dll /DELAYLOAD:freetype.dll /DELAYLOAD:harfbuzz.dll /DELAYLOAD:jxl_cms.dll /DELAYLOAD:jxl_threads.dll /DELAYLOAD:jxl.dll /DELAYLOAD:libsharpyuv.dll /DELAYLOAD:libwebp.dll /DELAYLOAD:libwebpmux.dll /DELAYLOAD:libx264-164.dll /DELAYLOAD:libx265.dll /DELAYLOAD:postproc-58.dll /DELAYLOAD:swresample-5.dll /DELAYLOAD:swscale-8.dll /DELAYLOAD:SDL2.dll /DELAYLOAD:zlib1.dll",
+]

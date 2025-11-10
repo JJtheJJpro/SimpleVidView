@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { MouseEvent, useEffect, useRef, useState } from "react";
 import "./App.css";
 import { FaPlay } from "react-icons/fa6";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 
 function ProgressBar() {
     const [progress, setProgress] = useState(0);
@@ -19,12 +20,12 @@ function ProgressBar() {
         setProgress(fraction);
     };
 
-    const handleMouseDown = (e: any) => {
+    const handleMouseDown = (e: MouseEvent<HTMLDivElement>) => {
         setIsDragging(true);
         updateProgressFromEvent(e);
     };
 
-    const handleMouseMove = (e: any) => {
+    const handleMouseMove = (e: globalThis.MouseEvent) => {
         if (isDragging) {
             updateProgressFromEvent(e);
         }
@@ -50,23 +51,41 @@ function ProgressBar() {
     );
 }
 
-
 function App() {
     const [frame, setFrame] = useState<[number, string]>([0, "null"]);
 
     useEffect(() => {
-        const unlisten = listen<[number, string]>("video-frame", (e) => {
-            setFrame(e.payload);
+        const unlistenFrame = listen<[number, number[]]>("video-frame", (e) => {
+            let [i, b] = e.payload;
+            const bf = Uint8Array.from(b);
+
+            if (frame[1] != "null") {
+                URL.revokeObjectURL(frame[1]);
+            }
+            const blob = new Blob([bf], { type: "image/png" });
+            const url = URL.createObjectURL(blob);
+
+            setFrame([i, url]);
         });
-        
+
+        const unlistenVideo = listen<string>("new-video", (e) => {
+            invoke("set_file", { path: e.payload }).then(() => {
+                invoke("get_frame", { idx: 0 });
+            });
+        });
+
         return () => {
-            unlisten.then(t => t());
+            unlistenFrame.then(t => t());
+            unlistenVideo.then(t => t());
+            if (frame[1] != "null") {
+                URL.revokeObjectURL(frame[1]);
+            }
         };
     });
 
     return (
         <>
-            <img id={frame[1]} title="Video" />
+            <img src={frame[1]} title="Video" />
             <div className="options">
                 <div className="playpause">
                     <FaPlay className="playpause" size="100%" />

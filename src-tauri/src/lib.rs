@@ -2,17 +2,18 @@ mod ffhelp;
 
 use crate::ffhelp::FFHelp;
 use std::{
-    net::TcpListener,
+    net::TcpStream,
     sync::{Arc, RwLock},
     thread,
 };
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, WindowEvent};
-use tungstenite::Bytes;
+use tungstenite::{Bytes, WebSocket};
 
 type AppData = Arc<RwLock<AppDataInner>>;
 
 struct AppDataInner {
     ffhelp: Option<FFHelp>,
+    stream: Option<WebSocket<TcpStream>>,
 }
 
 #[tauri::command]
@@ -21,11 +22,15 @@ fn set_file(path: String, appdata: State<AppData>) {
 }
 
 #[tauri::command]
-fn get_frame(idx: usize, app: AppHandle, appdata: State<AppData>) {
-    if let Some(appdata_z) = &mut appdata.write().unwrap().ffhelp {
+fn get_frame(idx: usize, appdata: State<AppData>) {
+    shared_get_frame(idx, &appdata);
+}
+
+fn shared_get_frame(idx: usize, appdata: &AppData) {
+    let buf = if let Some(appdata) = &mut appdata.write().unwrap().ffhelp {
         let (w, h, p) = {
-            let frame = appdata_z.get_frame(idx).unwrap();
-            let (w, h) = appdata_z.get_width_height();
+            let frame = appdata.get_frame(idx).unwrap();
+            let (w, h) = appdata.get_width_height();
             (w, h, frame)
         };
 
@@ -36,34 +41,45 @@ fn get_frame(idx: usize, app: AppHandle, appdata: State<AppData>) {
                 .unwrap();
         }
 
-        app.emit("video-frame", (idx, buf)).unwrap();
+        buf
+        //app.emit("video-frame", (idx, buf)).unwrap();
+    } else {
+        vec![]
+    };
+    if buf.len() > 0 {
+        if let Some(appdata) = &mut appdata.write().unwrap().stream {
+            appdata
+                .write(tungstenite::Message::Binary(Bytes::from(buf)))
+                .unwrap();
+        }
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_websocket::init())
         .setup(|app| {
-            const WS_SOCKET: &'static str = "127.0.0.1:9001";
+            let app_clone = app.app_handle().clone();
 
-            let app_hd = app.app_handle().clone();
             thread::spawn(move || {
-                let server = TcpListener::bind(WS_SOCKET).unwrap();
-                for stream in server.incoming() {
-                    let mut websocket = tungstenite::accept(stream.unwrap()).unwrap();
-                    loop {
-                        if let Some(v) = &mut app_hd.state::<AppData>().write().unwrap().ffhelp {
-                            let frame_bytes = v.get_frame(0).unwrap();
-                            websocket
-                                .send(tungstenite::Message::Binary(Bytes::from(frame_bytes)))
-                                .unwrap();
-                        }
+                let addr = "localhost:9001";
+
+                let listener = std::net::TcpListener::bind(addr).unwrap();
+
+                while let Ok((stream, _)) = listener.accept() {
+                    let ws_stream = tungstenite::accept(stream).unwrap();
+
+                    if let Ok(mut v) = app_clone.state::<AppData>().write() {
+                        v.stream = Some(ws_stream);
                     }
                 }
             });
 
-            app.manage::<AppData>(Arc::new(RwLock::new(AppDataInner { ffhelp: None })));
+            app.manage::<AppData>(Arc::new(RwLock::new(AppDataInner {
+                ffhelp: None,
+                stream: None,
+            })));
 
             Ok(())
         })
@@ -73,8 +89,10 @@ pub fn run() {
                     DragDropEvent::Enter { paths, .. } => if paths.len() != 1 {},
                     DragDropEvent::Drop { paths, .. } => {
                         if paths.len() == 1 {
-                            win.emit("new-video", paths[0].to_str().unwrap().to_string())
-                                .unwrap();
+                            //set_file(paths[0].to_str().unwrap().to_string());
+                            win.app_handle().state::<AppData>().write().unwrap().ffhelp =
+                                Some(FFHelp::open(&paths[0]).unwrap());
+                            shared_get_frame(0, &win.app_handle().state::<AppData>());
                         }
                     }
                     _ => {}

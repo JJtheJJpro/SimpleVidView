@@ -3,6 +3,7 @@ import "./App.css";
 import { FaPlay } from "react-icons/fa6";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import VideoCanvas from "./VideoCanvas";
 
 function ProgressBar() {
     const [progress, setProgress] = useState(0);
@@ -52,40 +53,9 @@ function ProgressBar() {
 }
 
 function App() {
-    const [frame, setFrame] = useState<[number, string]>([0, "null"]);
-
-    useEffect(() => {
-        const unlistenFrame = listen<[number, number[]]>("video-frame", (e) => {
-            let [i, b] = e.payload;
-            const bf = Uint8Array.from(b);
-
-            if (frame[1] != "null") {
-                URL.revokeObjectURL(frame[1]);
-            }
-            const blob = new Blob([bf], { type: "image/png" });
-            const url = URL.createObjectURL(blob);
-
-            setFrame([i, url]);
-        });
-
-        const unlistenVideo = listen<string>("new-video", (e) => {
-            invoke("set_file", { path: e.payload }).then(() => {
-                invoke("get_frame", { idx: 0 });
-            });
-        });
-
-        return () => {
-            unlistenFrame.then(t => t());
-            unlistenVideo.then(t => t());
-            if (frame[1] != "null") {
-                URL.revokeObjectURL(frame[1]);
-            }
-        };
-    });
-
     return (
         <>
-            <img src={frame[1]} title="Video" />
+            <VideoCanvas videoWidth={0} videoHeight={0} />
             <div className="options">
                 <div className="playpause">
                     <FaPlay className="playpause" size="100%" />

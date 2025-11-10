@@ -48,7 +48,7 @@ impl FFHelp {
             decoder.format(),
             w,
             h,
-            ffmpeg::format::Pixel::RGB24,
+            ffmpeg::format::Pixel::RGBA,
             w,
             h,
             software::scaling::flag::Flags::BILINEAR,
@@ -86,7 +86,7 @@ impl FFHelp {
         self.seek_to_frame(frame_index)?;
 
         let mut decoded = Video::empty();
-        let mut rgb = Video::empty();
+        let mut rgba = Video::empty();
 
         for (stream, packet) in self.ictx.packets() {
             if stream.index() == self.video_stream_index {
@@ -98,15 +98,21 @@ impl FFHelp {
                         (pts as f64 * rational_to_f64(self.time_base) * self.fps) as usize;
 
                     if current_frame >= frame_index {
-                        self.scalar.run(&decoded, &mut rgb)?;
-                        let vec = rgb.data(0).to_vec();
-                        let mut buf = Vec::with_capacity(self.w as usize * self.h as usize * 4);
-                        let bpp = rgb.stride(0);
+                        self.scalar.run(&decoded, &mut rgba)?;
+
+                        let stride = rgba.stride(0);
+                        let data = rgba.data(0);
+                        let pixel_bytes = 4;
+
+                        let mut out = Vec::with_capacity((self.w * self.h * pixel_bytes) as usize);
+
                         for y in 0..self.h {
-                            let start = y as usize * bpp;
-                            buf.extend_from_slice(&vec[start..start + self.w as usize * bpp]);
+                            let row = y as usize * stride;
+                            let end = row + (self.w as usize * pixel_bytes as usize);
+                            out.extend_from_slice(&data[row..end]);
                         }
-                        return Ok(buf);
+
+                        return Ok(out);
                     }
                 }
             }

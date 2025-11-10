@@ -1,9 +1,13 @@
 mod ffhelp;
 
 use crate::ffhelp::FFHelp;
-use base64::{engine::general_purpose, Engine};
-use std::sync::{Arc, RwLock};
+use std::{
+    net::TcpListener,
+    sync::{Arc, RwLock},
+    thread,
+};
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, WindowEvent};
+use tungstenite::Bytes;
 
 type AppData = Arc<RwLock<AppDataInner>>;
 
@@ -32,8 +36,7 @@ fn get_frame(idx: usize, app: AppHandle, appdata: State<AppData>) {
                 .unwrap();
         }
 
-        app.emit("video-frame", (idx, buf))
-            .unwrap();
+        app.emit("video-frame", (idx, buf)).unwrap();
     }
 }
 
@@ -42,6 +45,24 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            const WS_SOCKET: &'static str = "127.0.0.1:9001";
+
+            let app_hd = app.app_handle().clone();
+            thread::spawn(move || {
+                let server = TcpListener::bind(WS_SOCKET).unwrap();
+                for stream in server.incoming() {
+                    let mut websocket = tungstenite::accept(stream.unwrap()).unwrap();
+                    loop {
+                        if let Some(v) = &mut app_hd.state::<AppData>().write().unwrap().ffhelp {
+                            let frame_bytes = v.get_frame(0).unwrap();
+                            websocket
+                                .send(tungstenite::Message::Binary(Bytes::from(frame_bytes)))
+                                .unwrap();
+                        }
+                    }
+                }
+            });
+
             app.manage::<AppData>(Arc::new(RwLock::new(AppDataInner { ffhelp: None })));
 
             Ok(())

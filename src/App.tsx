@@ -1,21 +1,13 @@
-import { MouseEvent, useCallback, useEffect, useRef, useState } from "react";
-import "./App.css";
-import { FaPlay } from "react-icons/fa6";
-import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Plane, Text } from '@react-three/drei';
+import { useState, useEffect, useRef, useMemo, MouseEvent, ChangeEventHandler } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import Socket from "@tauri-apps/plugin-websocket";
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import "./App.css";
+import { Text } from '@react-three/drei';
+import { FaPause, FaPlay } from 'react-icons/fa6';
 
-export interface RawImageData {
-    data: Uint8Array;
-    width: number;
-    height: number;
-}
-
-function ProgressBar() {
-    const [progress, setProgress] = useState(0);
+function ProgressBar(props: { progress: number, onChange: (n: number) => void }) {
     const [isDragging, setIsDragging] = useState(false);
     const barRef = useRef<HTMLDivElement | null>(null);
 
@@ -27,7 +19,8 @@ function ProgressBar() {
         const rect = barRef.current.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const fraction = Math.min(Math.max(x / rect.width, 0), 1);
-        setProgress(fraction);
+        //setProgress(fraction);
+        props.onChange(fraction);
     };
 
     const handleMouseDown = (e: MouseEvent<HTMLDivElement>) => {
@@ -56,185 +49,168 @@ function ProgressBar() {
 
     return (
         <div className="pbar" ref={barRef} onMouseDown={handleMouseDown}>
-            <div className="pbardrag" style={{ width: `${progress * 100}%`, transition: isDragging ? "none" : "width 0.1s" }} />
+            <div className="pbardrag" style={{ width: `${props.progress * 100}%`, transition: isDragging ? "none" : "width 0.1s" }} />
         </div>
     );
 }
 
-/*
-// --- WebSocket Simulation (Replace with your actual Tauri WebSocket) ---
-// This will simulate receiving raw pixel data for a simple animated gradient.
-// In your real app, this would be your `websocket.onmessage` handler.
-const simulateWebSocketData = (callback: any) => {
-    let frameCount = 0;
-    const width = 256;
-    const height = 256;
-    const data = new Uint8Array(width * height * 4); // RGBA
-
-    const animate = () => {
-        frameCount++;
-        for (let i = 0; i < width; i++) {
-            for (let j = 0; j < height; j++) {
-                const index = (j * width + i) * 4;
-                const r = Math.floor(128 + 127 * Math.sin(0.01 * frameCount + i / 50));
-                const g = Math.floor(128 + 127 * Math.sin(0.01 * frameCount + j / 50 + Math.PI / 2));
-                const b = Math.floor(128 + 127 * Math.sin(0.01 * frameCount + (i + j) / 70 + Math.PI));
-
-                data[index] = r;      // R
-                data[index + 1] = g;  // G
-                data[index + 2] = b;  // B
-                data[index + 3] = 255; // A (fully opaque)
-            }
-        }
-        // Simulate receiving this data from websocket
-        callback({ data: data.slice(), width, height }); // Pass a copy to avoid mutation issues
-        requestAnimationFrame(animate);
-    };
-    animate();
-};
-// --- End WebSocket Simulation ---
-*/
-
-// --- Component to display the texture on a plane ---
-interface ImagePlaneProps {
-    imageData: RawImageData;
+// --- Types ---
+interface VideoMeta {
+    width: number;
+    height: number;
+    duration: number;
 }
 
-function ImagePlane({ imageData }: ImagePlaneProps) {
-    // Specify the type for the refs
+// --- R3F Component: Handles Video Texture ---
+const VideoScreen = ({
+    playing,
+    meta
+}: {
+    playing: boolean;
+    meta: VideoMeta
+}) => {
     const meshRef = useRef<THREE.Mesh>(null);
     const textureRef = useRef<THREE.DataTexture | null>(null);
+    const isFetching = useRef(false);
 
-    // Initialize the texture once
-    useEffect(() => {
-        if (!imageData || textureRef.current) return;
+    // 1. Initialize DataTexture when meta changes
+    // We use DataTexture because we are pushing raw bytes, not an Image element
+    useMemo(() => {
+        if (!meta) return;
 
-        // Create a DataTexture, specifying the format (RGBA)
-        const initialTexture = new THREE.DataTexture(
-            imageData.data,
-            imageData.width,
-            imageData.height,
+        const size = meta.width * meta.height * 4; // RGBA
+        const data = new Uint8Array(size);
+        const texture = new THREE.DataTexture(
+            data,
+            meta.width,
+            meta.height,
             THREE.RGBAFormat,
-            THREE.UnsignedByteType // Assuming standard 8-bit per channel
+            THREE.UnsignedByteType
         );
-        initialTexture.needsUpdate = true;
-        textureRef.current = initialTexture;
 
-        // Apply the texture to the material
-        if (meshRef.current) {
-            // Cast the material to the correct type to access the 'map' property
-            const material = meshRef.current.material as THREE.MeshBasicMaterial;
-            material.map = textureRef.current;
-            material.needsUpdate = true;
-        }
+        texture.needsUpdate = true;
+        // Flip Y because WebGL coordinates are inverted relative to images
+        texture.flipY = true;
+        textureRef.current = texture;
 
-    }, [imageData]); // Run once on initial data load
+    }, [meta]);
 
-    // Update the texture data when new imageData arrives
-    useEffect(() => {
-        const texture = textureRef.current;
-        if (imageData && texture) {
-            // Update the texture's data, dimensions, and mark it for update
-            texture.image.data = imageData.data;
-            texture.image.width = imageData.width;
-            texture.image.height = imageData.height;
-            texture.needsUpdate = true; // CRITICAL: Re-upload to GPU
-        }
-    }, [imageData]); // Re-run effect when new data is received
+    // 2. The Render Loop (Runs 60fps+)
+    useFrame(() => {
+        if (!playing || !meta || !textureRef.current || isFetching.current) return;
 
-    // Scale the plane to maintain aspect ratio and size it relative to the scene
-    const planeWidth = imageData.width / 100;
-    const planeHeight = imageData.height / 100;
+        isFetching.current = true;
+
+        // Fetch frame from Rust
+        invoke<ArrayBuffer>('get_frame')
+            .then((buffer) => {
+                if (textureRef.current) {
+                    // Direct update of texture memory
+                    const data = new Uint8Array(buffer);
+
+                    // Safety check for buffer size mismatch
+                    if (textureRef.current.image.data && data.length === textureRef.current.image.data.length) {
+                        (textureRef.current.image.data as Uint8Array).set(data);
+                        textureRef.current.needsUpdate = true;
+                    }
+                }
+            })
+            .catch((e) => {
+                console.warn("Frame drop/End:", e);
+            })
+            .finally(() => {
+                isFetching.current = false;
+            });
+    });
+
+    if (!meta || !textureRef.current) return null;
+
+    // Calculate aspect ratio to scale the plane correctly
+    const aspectRatio = meta.width / meta.height;
 
     return (
-        <Plane ref={meshRef} args={[planeWidth, planeHeight]}>
-            <meshBasicMaterial transparent side={THREE.DoubleSide} />
-        </Plane>
+        <mesh ref={meshRef} scale={[aspectRatio * 5, 5, 1]}>
+            <planeGeometry />
+            <meshBasicMaterial map={textureRef.current} side={THREE.DoubleSide} />
+        </mesh>
     );
-}
+};
 
 // --- Main App Component ---
-function ImageCanvas() {
-    // Type the state with the RawImageData interface
-    const [currentImageData, setCurrentImageData] = useState<RawImageData | null>(null);
+export default function App() {
+    const [meta, setMeta] = useState<VideoMeta | null>(null);
+    const [playing, setPlaying] = useState(false);
+    const [progress, setProgress] = useState(0);
 
-    // Function to handle incoming data from the WebSocket
-    const handleIncomingData = useCallback((data: ArrayBuffer) => {
-        if (data.byteLength < 8) {
-            console.error("Received message too short for header.");
-            return;
-        }
-
-        // Assuming your Tauri backend sends 4 bytes (u32) for width, then 4 bytes for height, 
-        // followed by the pixel data.
-        const headerBuffer = data.slice(0, 8);
-        const pixelDataBuffer = data.slice(8);
-
-        const dataView = new DataView(headerBuffer);
-        // Use little-endian byte order (true) to match common Rust/binary serialization
-        const width = dataView.getUint32(0, true);
-        const height = dataView.getUint32(4, true);
-
-        const pixelData = new Uint8Array(pixelDataBuffer);
-
-        setCurrentImageData({ data: pixelData, width, height });
-
+    // File Drop Listener
+    useEffect(() => {
+        const unlisten = listen<{ paths: string[] }>('tauri://drag-drop', async (event) => {
+            if (event.payload.paths.length > 0) {
+                loadVideo(event.payload.paths[0]);
+            }
+        });
+        return () => { unlisten.then(u => u()); };
     }, []);
 
-    // Effect to initialize the WebSocket
-    useEffect(() => {
-        // Replace this with your actual Tauri WebSocket setup
-        //const ws = new WebSocket("ws://localhost:9001/ws");
-        //ws.binaryType = "arraybuffer"; // ESSENTIAL: ensures event.data is an ArrayBuffer
-        //ws.onmessage = (event: MessageEvent) => {
-        //    if (event.data instanceof ArrayBuffer) {
-        //        handleIncomingData(event.data);
-        //    } else {
-        //        console.warn("Received non-binary data, ignoring.");
-        //    }
-        //};
-        //ws.onerror = (e) => console.error("WebSocket Error:", e);
-        //ws.onclose = () => console.log("WebSocket connection closed.");
-        //return () => {
-        //    ws.close();
-        //};
+    const loadVideo = async (path: string) => {
+        try {
+            setPlaying(false);
+            const metaStr = await invoke<string>('load_video', { path });
+            setMeta(JSON.parse(metaStr));
+            setPlaying(true);
+        } catch (e) {
+            console.error(e);
+        }
+    };
 
-        const ws = Socket.connect("ws://localhost:9001/ws");
-        ws.then(v => {
-            v.addListener(msg => {
-                if (msg.type == "Binary") {
-                    handleIncomingData(Uint8Array.from(msg.data).buffer);
-                }
-            });
-        });
-    }, [handleIncomingData]);
+    const handleSeek = async (val: number) => {
+        if (!meta) return;
+        setProgress(val);
+        // Basic debounce could be added here
+        await invoke('seek_video', { timeSec: val * meta.duration });
+    };
 
-    return (
-        <div style={{ width: '100%', height: '100%' }}>
-            <Canvas camera={{ position: [0, 0, 5] }}>
-                <ambientLight intensity={0.5} />
-                {currentImageData ? (
-                    <ImagePlane imageData={currentImageData} />
-                ) : (
-                    <Text color="white">Waiting for image stream...</Text> // Add Text component from Drei if needed
-                )}
-            </Canvas>
-        </div>
-    );
-}
-
-function App() {
     return (
         <>
-            <ImageCanvas />
+            <div className="vid">
+                <Canvas camera={{ position: [0, 0, 5] }}>
+                    <ambientLight intensity={0.5} />
+                    {meta ? (
+                        <VideoScreen playing={playing} meta={meta} />
+                    ) : (
+                        <Text color="white">Waiting for image stream...</Text>
+                    )}
+
+                </Canvas>
+            </div>
+
             <div className="options">
-                <div className="playpause">
-                    <FaPlay className="playpause" size="100%" />
+                <div className="playpause" onClick={() => setPlaying(!playing)}>
+                    {playing ? (
+                        <FaPause className="playpause" size="100%" />
+                    ) : (
+                        <FaPlay className="playpause" size="100%" />
+                    )}
                 </div>
-                <ProgressBar />
+                <ProgressBar progress={progress} onChange={(n) => handleSeek(n)} />
+            </div>
+            <div className="absolute inset-0 z-10 flex flex-col justify-between pointer-events-none">
+                {meta && (
+                    <div className="bg-zinc-900/90 p-6 backdrop-blur-xl border-t border-zinc-800 pointer-events-auto pb-8">
+                        <div className="flex flex-col gap-3 max-w-4xl mx-auto">
+                            {/* Progress Bar */}
+                            <input
+                                title='Range'
+                                type="range"
+                                min="0" max="1" step="0.001"
+                                value={progress}
+                                onChange={(e) => handleSeek(parseFloat(e.target.value))}
+                                className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500 hover:h-2 transition-all"
+                            />
+                        </div>
+                    </div>
+                )}
             </div>
         </>
     );
 }
-
-export default App;

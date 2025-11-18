@@ -1,6 +1,7 @@
 use http::{header::*, response::Builder as ResponseBuilder, status::StatusCode};
 use http_range::HttpRange;
 use std::io::{Read, Seek, SeekFrom, Write};
+use tauri::{DragDropEvent, WindowEvent};
 
 fn get_stream_response(
     request: http::Request<Vec<u8>>,
@@ -11,7 +12,7 @@ fn get_stream_response(
         .to_string();
 
     // return error 404 if it's not our video
-    if path != "streaming_example_test_video.mp4" {
+    if path != "v.mp4" {
         return Ok(ResponseBuilder::new().status(404).body(Vec::new())?);
     }
 
@@ -168,6 +169,32 @@ pub fn run() {
                         .unwrap(),
                 ),
             }
+        })
+        .on_window_event(|win, ev| match ev {
+            WindowEvent::DragDrop(ev) => match ev {
+                DragDropEvent::Drop { paths, .. } => {
+                    if paths.len() == 1 {
+                        if std::fs::exists("./v.mp4").unwrap() {
+                            std::fs::remove_file("./v.mp4").unwrap();
+                        }
+                        std::process::Command::new("ffmpeg")
+                            .arg("-i")
+                            .arg(paths[0].clone())
+                            .arg("./v.mp4")
+                            .spawn()
+                            .unwrap()
+                            .wait()
+                            .unwrap();
+                    }
+                }
+                _ => {}
+            },
+            WindowEvent::CloseRequested { .. } => {
+                if std::fs::exists("./v.mp4").unwrap() {
+                    std::fs::remove_file("./v.mp4").unwrap();
+                }
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

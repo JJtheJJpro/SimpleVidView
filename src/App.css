@@ -38,6 +38,11 @@ div.vid {
     height: 96.5%;
 }
 
+video {
+    height: 100%;
+    width: 100%;
+}
+
 div.playpause {
     width: 3.5%;
     height: 100%;

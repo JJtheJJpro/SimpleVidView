@@ -1,7 +1,56 @@
 import { MouseEvent, useEffect, useRef, useState } from "react";
 import { FaPause, FaPlay } from "react-icons/fa6";
 import "./App.css";
-import { listen } from "@tauri-apps/api/event";
+import { convertFileSrc } from "@tauri-apps/api/core";
+
+function useVideoFrame(
+    videoRef: React.RefObject<HTMLVideoElement | null>,
+    onFrame: (currentTime: number, metadata?: VideoFrameCallbackMetadata) => void
+) {
+    //const rafId = useRef<number | null>(null);
+    const vfId = useRef<number | null>(null);
+
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        let running = true;
+
+        // --- Option 3: requestVideoFrameCallback ----------------------------
+        if ("requestVideoFrameCallback" in video) {
+            const handleFrame = (
+                _now: number,
+                metadata: VideoFrameCallbackMetadata
+            ) => {
+                if (!running) return;
+                onFrame(metadata.mediaTime, metadata);
+                vfId.current = video.requestVideoFrameCallback(handleFrame);
+            };
+
+            vfId.current = video.requestVideoFrameCallback(handleFrame);
+
+            return () => {
+                running = false;
+                if (vfId.current !== null && "cancelVideoFrameCallback" in video) {
+                    (video as any).cancelVideoFrameCallback(vfId.current);
+                }
+            };
+        }
+        //else {
+        //    // --- Option 1 fallback: requestAnimationFrame ------------------------
+        //    const loop = () => {
+        //        if (!running) return;
+        //        onFrame(video.currentTime); // Error will always be here.  Deal with it.
+        //        rafId.current = requestAnimationFrame(loop);
+        //    };
+        //    rafId.current = requestAnimationFrame(loop);
+        //    return () => {
+        //        running = false;
+        //        if (rafId.current !== null) cancelAnimationFrame(rafId.current);
+        //    };
+        //}
+    }, [videoRef, onFrame]);
+}
 
 function ProgressBar(props: { progress: number, onChange: (n: number) => void }) {
     const [isDragging, setIsDragging] = useState(false);
@@ -55,43 +104,58 @@ export default function App() {
     const [progress, setProgress] = useState(0);
     const vidRef = useRef<HTMLVideoElement | null>(null);
 
+    useVideoFrame(vidRef, (curTime) => {
+        setProgress(curTime);
+    });
+
     useEffect(() => {
-        const unlisten = listen<{ paths: string[] }>('tauri://drag-drop', (event) => {
-            
-        });
-        return () => { unlisten.then(u => u()); };
-    }, []);
+        if (vidRef.current) {
+            vidRef.current.play();
+        }
+    }, [vidRef]);
+
+    //useEffect(() => {
+    //    const unlisten = listen<{ paths: string[] }>('tauri://drag-drop', (event) => {
+    //        if (vidRef.current) {
+    //            vidRef.current.src = convertFileSrc('v.mp4', 'stream');
+    //        }
+    //    });
+    //    return () => { unlisten.then(u => u()); };
+    //}, [vidRef]);
 
     const handleSeek = async (val: number) => {
-
+        if (vidRef.current) {
+            const upProg = vidRef.current.duration * val;
+            vidRef.current.currentTime = upProg;
+            setProgress(upProg);
+        }
     };
 
     return (
         <>
             <div className="vid">
-                <video ref={vidRef} itemType='video/mp4' src="" controls autoPlay />
+                <video loop ref={vidRef} itemType='video/mp4' src={convertFileSrc('v.mp4', 'stream')} />
             </div>
 
             <div className="options">
-                <div className="playpause" onClick={() => setPlaying(!playing)}>
+                <div className="playpause" onClick={() => {
+                    setPlaying(!playing);
+                    if (vidRef.current) {
+                        if (playing) {
+                            vidRef.current.play();
+                        } else {
+                            vidRef.current.pause();
+                        }
+                    }
+                }}>
                     {playing ? (
                         <FaPause className="playpause" size="100%" />
                     ) : (
                         <FaPlay className="playpause" size="100%" />
                     )}
                 </div>
-                <ProgressBar progress={progress} onChange={(n) => handleSeek(n)} />
+                <ProgressBar progress={vidRef.current ? progress / vidRef.current.duration : 0} onChange={(n) => handleSeek(n)} />
             </div>
         </>
     );
 }
-
-//<Canvas camera={{ position: [0, 0, 5] }}>
-//                    <ambientLight intensity={0.5} />
-//                    {meta ? (
-//                        <VideoScreen playing={playing} meta={meta} />
-//                    ) : (
-//                        <Text color="white">Waiting for image stream...</Text>
-//                    )}
-//
-//                </Canvas>

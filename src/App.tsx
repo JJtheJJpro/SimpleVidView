@@ -2,6 +2,7 @@ import { MouseEvent, useEffect, useRef, useState } from "react";
 import { FaPause, FaPlay } from "react-icons/fa6";
 import "./App.css";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 function useVideoFrame(
     videoRef: React.RefObject<HTMLVideoElement | null>,
@@ -102,6 +103,7 @@ function ProgressBar(props: { progress: number, onChange: (n: number) => void })
 export default function App() {
     const [playing, setPlaying] = useState(false);
     const [progress, setProgress] = useState(0);
+    const [loading, setLoading] = useState(0);
     const vidRef = useRef<HTMLVideoElement | null>(null);
 
     useVideoFrame(vidRef, (curTime) => {
@@ -114,17 +116,24 @@ export default function App() {
         }
     }, [vidRef]);
 
-    //useEffect(() => {
-    //    const unlisten = listen<{ paths: string[] }>('tauri://drag-drop', (event) => {
-    //        if (vidRef.current) {
-    //            vidRef.current.src = convertFileSrc('v.mp4', 'stream');
-    //        }
-    //    });
-    //    return () => { unlisten.then(u => u()); };
-    //}, [vidRef]);
+    useEffect(() => {
+        const unlisten1 = listen('refresh-mega', () => {
+            //if (vidRef.current) {
+            //    vidRef.current.src = convertFileSrc('v.mp4', 'stream');
+            //}
+            window.location.reload();
+        });
+        const unlisten2 = listen<number>('c-prog', (e) => {
+            setLoading(e.payload);
+        });
+        return () => {
+            unlisten1.then(u => u());
+            unlisten2.then(u => u());
+        };
+    }, []);
 
     const handleSeek = async (val: number) => {
-        if (vidRef.current) {
+        if (vidRef.current && !loading) {
             const upProg = vidRef.current.duration * val;
             vidRef.current.currentTime = upProg;
             setProgress(upProg);
@@ -134,7 +143,11 @@ export default function App() {
     return (
         <>
             <div className="vid">
-                <video loop ref={vidRef} itemType='video/mp4' src={convertFileSrc('v.mp4', 'stream')} />
+                {loading ? (
+                    <p>{(loading * 100).toPrecision(4)}%</p>
+                ) : (
+                    <video loop ref={vidRef} itemType='video/mp4' src={convertFileSrc('v.mp4', 'stream')} />
+                )}
             </div>
 
             <div className="options">
@@ -154,7 +167,7 @@ export default function App() {
                         <FaPlay className="playpause" size="100%" />
                     )}
                 </div>
-                <ProgressBar progress={vidRef.current ? progress / vidRef.current.duration : 0} onChange={handleSeek} />
+                <ProgressBar progress={vidRef.current ? progress / vidRef.current.duration : loading} onChange={handleSeek} />
             </div>
         </>
     );

@@ -5,7 +5,7 @@ use std::{
     error::Error,
     io::{Read, Seek, SeekFrom, Write},
 };
-use tauri::{DragDropEvent, WindowEvent};
+use tauri::{AppHandle, DragDropEvent, Emitter, Manager, WindowEvent};
 
 // Helper enum to hold state
 enum Transcoder {
@@ -26,6 +26,7 @@ enum Transcoder {
 fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path> + ?Sized>(
     input_path: &PI,
     output_path: &PO,
+    win: AppHandle,
 ) -> Result<(), Box<dyn Error>> {
     // 1. Input Context
     let mut ictx = ffmpeg::format::input(input_path)?;
@@ -146,8 +147,20 @@ fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path
     // 4. Write Header
     octx.write_header()?;
 
+    let mut fps = 0.0;
+    let mut fcount = 0;
+    let mut vlen = 0.0;
+    let mut i = 0;
+
     // 5. Transcoding Loop
     for (stream, mut packet) in ictx.packets() {
+        if fps == 0.0 && fcount == 0 && vlen == 0.0 && i == 0 {
+            fps = stream.avg_frame_rate().numerator() as f64
+                / stream.avg_frame_rate().denominator() as f64;
+            fcount = stream.frames();
+            vlen = fcount as f64 / fps;
+        }
+
         if let Some(transcoder) = streamer.get_mut(&stream.index()) {
             match transcoder {
                 Transcoder::Video(decoder, encoder, out_index, in_time_base) => {
@@ -159,6 +172,10 @@ fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path
                         let pts = decoded_frame.pts();
                         decoded_frame.set_pts(pts); // Often needs rescaling here if bases differ significantly
 
+                        i += 1;
+                        if i % 10 == 0 {
+                            win.emit("c-prog", i as f64 / fcount as f64).unwrap();
+                        }
                         // Encode
                         encoder.send_frame(&decoded_frame)?;
                         let mut encoded_packet = ffmpeg::Packet::empty();
@@ -218,6 +235,8 @@ fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path
             }
         }
     }
+
+    println!();
 
     // 7. Write Trailer
     octx.write_trailer()?;
@@ -381,7 +400,7 @@ fn random_boundary() -> String {
 pub fn run() {
     ffmpeg::init().expect("ffmpeg libraries failed to initialize.");
     tauri::Builder::default()
-        .register_asynchronous_uri_scheme_protocol("stream", move |ctx, request, responder| {
+        .register_asynchronous_uri_scheme_protocol("stream", move |_ctx, request, responder| {
             match get_stream_response(request) {
                 Ok(http_response) => responder.respond(http_response),
                 Err(e) => responder.respond(
@@ -400,7 +419,18 @@ pub fn run() {
                         if std::fs::exists("./v.mp4").unwrap() {
                             std::fs::remove_file("./v.mp4").unwrap();
                         }
-                        convert_to_mp4(&paths[0], "./v.mp4").unwrap();
+                        let h = win.app_handle().clone();
+                        let copy_path = paths[0].clone();
+
+                        if copy_path.extension().is_some() && copy_path.extension().unwrap() == "mp4" {
+                            std::fs::copy(copy_path, "./v.mp4").unwrap();
+                            h.emit("refresh-mega", ()).unwrap();
+                        } else {
+                            std::thread::spawn(move || {
+                                convert_to_mp4(&copy_path, "./v.mp4", h.clone()).unwrap();
+                                h.emit("refresh-mega", ()).unwrap();
+                            });
+                        }
                     }
                 }
                 _ => {}

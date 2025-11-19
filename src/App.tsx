@@ -1,8 +1,9 @@
-import { MouseEvent, useEffect, useRef, useState } from "react";
+import { MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import { FaPause, FaPlay } from "react-icons/fa6";
 import "./App.css";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { exists } from '@tauri-apps/plugin-fs';
 
 function useVideoFrame(
     videoRef: React.RefObject<HTMLVideoElement | null>,
@@ -55,6 +56,7 @@ function useVideoFrame(
 
 function ProgressBar(props: { progress: number, onChange: (n: number) => void }) {
     const [isDragging, setIsDragging] = useState(false);
+    const [dragPos, setDragPos] = useState(0);
     const barRef = useRef<HTMLDivElement | null>(null);
 
     const updateProgressFromEvent = (e: any) => {
@@ -66,6 +68,7 @@ function ProgressBar(props: { progress: number, onChange: (n: number) => void })
         const x = e.clientX - rect.left;
         const fraction = Math.min(Math.max(x / rect.width, 0), 1);
         //setProgress(fraction);
+        setDragPos(fraction);
         props.onChange(fraction);
     };
 
@@ -82,6 +85,7 @@ function ProgressBar(props: { progress: number, onChange: (n: number) => void })
 
     const handleMouseUp = () => {
         setIsDragging(false);
+        setDragPos(0);
     };
 
     useEffect(() => {
@@ -95,7 +99,7 @@ function ProgressBar(props: { progress: number, onChange: (n: number) => void })
 
     return (
         <div className="pbar" ref={barRef} onMouseDown={handleMouseDown}>
-            <div className="pbardrag" style={{ width: `${props.progress * 100}%`, transition: isDragging ? "none" : "width 0.1s" }} />
+            <div className="pbardrag" style={{ width: `${isDragging ? dragPos * 100 : props.progress * 100}%`, transition: isDragging ? "none" : "width 0.1s" }} />
         </div>
     );
 }
@@ -104,7 +108,23 @@ export default function App() {
     const [playing, setPlaying] = useState(false);
     const [progress, setProgress] = useState(0);
     const [loading, setLoading] = useState(0);
+    const [fileExists, setFileExists] = useState(true);
     const vidRef = useRef<HTMLVideoElement | null>(null);
+    const playCallback = useCallback(() => {
+        setPlaying(prev => {
+            const newVal = !prev;
+
+            if (vidRef.current) {
+                if (newVal) {
+                    vidRef.current.play();
+                } else {
+                    vidRef.current.pause();
+                }
+            }
+
+            return newVal;
+        });
+    }, [playing, vidRef]);
 
     useVideoFrame(vidRef, (curTime) => {
         setProgress(curTime);
@@ -112,11 +132,43 @@ export default function App() {
 
     useEffect(() => {
         if (vidRef.current) {
+            vidRef.current.src = convertFileSrc('v.mp4', 'stream') + `?t=${Date.now()}`;
+            vidRef.current.load();
             vidRef.current.play();
+            setPlaying(true);
         }
     }, [vidRef]);
 
+    function keyDown(ev: KeyboardEvent) {
+        if (vidRef.current) {
+            console.log(ev.code);
+            switch (ev.code) {
+                case "ArrowRight":
+                    break;
+                case "ArrowLeft":
+                    break;
+                case "Space":
+                    playCallback();
+                    break;
+            }
+        }
+    }
+    function keyUp(ev: KeyboardEvent) {
+        if (vidRef.current) {
+            switch (ev.code) {
+                case "ArrowRight":
+                    break;
+                case "ArrowLeft":
+                    break;
+                case "Space":
+                    break;
+            }
+        }
+    }
+
     useEffect(() => {
+        (async () => setFileExists(await exists("./v.mp4")))();
+
         const unlisten1 = listen('refresh-mega', () => {
             //if (vidRef.current) {
             //    vidRef.current.src = convertFileSrc('v.mp4', 'stream');
@@ -124,11 +176,18 @@ export default function App() {
             window.location.reload();
         });
         const unlisten2 = listen<number>('c-prog', (e) => {
+            setFileExists(false);
             setLoading(e.payload);
         });
+
+        window.addEventListener("keydown", keyDown);
+        window.addEventListener("keyup", keyUp);
+
         return () => {
             unlisten1.then(u => u());
             unlisten2.then(u => u());
+            window.removeEventListener("keydown", keyDown);
+            window.removeEventListener("keyup", keyUp);
         };
     }, []);
 
@@ -143,28 +202,23 @@ export default function App() {
     return (
         <>
             <div className="vid">
-                {loading ? (
+                {fileExists ? (
+                    <video loop ref={vidRef} itemType='video/mp4' />
+                ) : loading ? (
                     <p>{(loading * 100).toPrecision(4)}%</p>
                 ) : (
-                    <video loop ref={vidRef} itemType='video/mp4' src={convertFileSrc('v.mp4', 'stream')} />
+                    <p>Drop video file here</p>
                 )}
             </div>
 
             <div className="options">
                 <div className="playpause" onClick={() => {
-                    setPlaying(!playing);
-                    if (vidRef.current) {
-                        if (playing) {
-                            vidRef.current.play();
-                        } else {
-                            vidRef.current.pause();
-                        }
-                    }
+                    playCallback();
                 }}>
                     {playing ? (
-                        <FaPause className="playpause" size="100%" />
-                    ) : (
                         <FaPlay className="playpause" size="100%" />
+                    ) : (
+                        <FaPause className="playpause" size="100%" />
                     )}
                 </div>
                 <ProgressBar progress={vidRef.current ? progress / vidRef.current.duration : loading} onChange={handleSeek} />

@@ -67,7 +67,7 @@ fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path
 
             // Decoder
             let context_decoder = ffmpeg::codec::context::Context::from_parameters(istream_params)?;
-            let mut decoder = context_decoder.decoder().video()?;
+            let decoder = context_decoder.decoder().video()?;
 
             // Encoder (H.264)
             let global_header = octx
@@ -76,7 +76,7 @@ fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path
                 .contains(ffmpeg::format::flag::Flags::GLOBAL_HEADER);
             let codec =
                 ffmpeg::encoder::find(ffmpeg::codec::Id::H264).expect("H.264 codec not found");
-            let mut context_encoder = ffmpeg::codec::context::Context::new_with_codec(codec);
+            let context_encoder = ffmpeg::codec::context::Context::new_with_codec(codec);
             let mut encoder = context_encoder.encoder().video()?;
 
             // Set Encoder Parameters
@@ -108,14 +108,14 @@ fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path
             // -- AUDIO TRANSCODER (AAC) --
 
             let context_decoder = ffmpeg::codec::context::Context::from_parameters(istream_params)?;
-            let mut decoder = context_decoder.decoder().audio()?;
+            let decoder = context_decoder.decoder().audio()?;
 
             let global_header = octx
                 .format()
                 .flags()
                 .contains(ffmpeg::format::flag::Flags::GLOBAL_HEADER);
             let codec = ffmpeg::encoder::find(ffmpeg::codec::Id::AAC).expect("AAC codec not found");
-            let mut context_encoder = ffmpeg::codec::context::Context::new_with_codec(codec);
+            let context_encoder = ffmpeg::codec::context::Context::new_with_codec(codec);
             let mut encoder = context_encoder.encoder().audio()?;
 
             // Set Encoder Parameters
@@ -153,7 +153,7 @@ fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path
     let mut i = 0;
 
     // 5. Transcoding Loop
-    for (stream, mut packet) in ictx.packets() {
+    for (stream, packet) in ictx.packets() {
         if fps == 0.0 && fcount == 0 && vlen == 0.0 && i == 0 {
             fps = stream.avg_frame_rate().numerator() as f64
                 / stream.avg_frame_rate().denominator() as f64;
@@ -164,20 +164,35 @@ fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path
         if let Some(transcoder) = streamer.get_mut(&stream.index()) {
             match transcoder {
                 Transcoder::Video(decoder, encoder, out_index, in_time_base) => {
+                    let mut sws_ctx = ffmpeg::software::scaling::context::Context::get(
+                        decoder.format(),
+                        decoder.width(),
+                        decoder.height(),
+                        ffmpeg::format::Pixel::YUV420P,
+                        decoder.width(),
+                        decoder.height(),
+                        ffmpeg::software::scaling::flag::Flags::BILINEAR,
+                    )?;
                     // Decode
                     decoder.send_packet(&packet)?;
                     let mut decoded_frame = ffmpeg::frame::Video::empty();
                     while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                        let mut converted = ffmpeg::frame::Video::empty();
+                        converted.set_width(decoder.width());
+                        converted.set_height(decoder.height());
+                        converted.set_format(ffmpeg::format::Pixel::YUV420P);
+
+                        sws_ctx.run(&decoded_frame, &mut converted)?;
                         // Rescale timestamps for the frame (Input -> Encoder)
                         let pts = decoded_frame.pts();
-                        decoded_frame.set_pts(pts); // Often needs rescaling here if bases differ significantly
+                        converted.set_pts(pts); // Often needs rescaling here if bases differ significantly
 
                         i += 1;
-                        if i % 10 == 0 {
+                        if i % 5 == 0 {
                             win.emit("c-prog", i as f64 / fcount as f64).unwrap();
                         }
                         // Encode
-                        encoder.send_frame(&decoded_frame)?;
+                        encoder.send_frame(&converted)?;
                         let mut encoded_packet = ffmpeg::Packet::empty();
                         while encoder.receive_packet(&mut encoded_packet).is_ok() {
                             encoded_packet.set_stream(*out_index);
@@ -422,7 +437,9 @@ pub fn run() {
                         let h = win.app_handle().clone();
                         let copy_path = paths[0].clone();
 
-                        if copy_path.extension().is_some() && copy_path.extension().unwrap() == "mp4" {
+                        if copy_path.extension().is_some()
+                            && copy_path.extension().unwrap() == "mp4"
+                        {
                             std::fs::copy(copy_path, "./v.mp4").unwrap();
                             h.emit("refresh-mega", ()).unwrap();
                         } else {
@@ -442,6 +459,7 @@ pub fn run() {
             }
             _ => {}
         })
+        .plugin(tauri_plugin_fs::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -154,7 +154,7 @@ export default function App() {
                         <FaPlay className="playpause" size="100%" />
                     )}
                 </div>
-                <ProgressBar progress={vidRef.current ? progress / vidRef.current.duration : 0} onChange={(n) => handleSeek(n)} />
+                <ProgressBar progress={vidRef.current ? progress / vidRef.current.duration : 0} onChange={handleSeek} />
             </div>
         </>
     );

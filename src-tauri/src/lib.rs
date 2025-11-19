@@ -1,7 +1,229 @@
+use ffmpeg_next as ffmpeg;
 use http::{header::*, response::Builder as ResponseBuilder, status::StatusCode};
 use http_range::HttpRange;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::{
+    error::Error,
+    io::{Read, Seek, SeekFrom, Write},
+};
 use tauri::{DragDropEvent, WindowEvent};
+
+// Helper enum to hold state
+enum Transcoder {
+    Video(
+        ffmpeg::codec::decoder::Video,
+        ffmpeg::codec::encoder::Video,
+        usize,            // Output stream index
+        ffmpeg::Rational, // Input time base
+    ),
+    Audio(
+        ffmpeg::codec::decoder::Audio,
+        ffmpeg::codec::encoder::Audio,
+        usize,
+        ffmpeg::Rational,
+    ),
+}
+
+fn convert_to_mp4<PI: AsRef<std::path::Path> + ?Sized, PO: AsRef<std::path::Path> + ?Sized>(
+    input_path: &PI,
+    output_path: &PO,
+) -> Result<(), Box<dyn Error>> {
+    // 1. Input Context
+    let mut ictx = ffmpeg::format::input(input_path)?;
+
+    // 2. Output Context
+    let mut octx = ffmpeg::format::output(output_path)?;
+
+    // Map input stream index to (Output Stream Index, Transcoder Context)
+    let mut streamer = std::collections::HashMap::new();
+
+    // 3. Setup Streams & Transcoders
+    for (stream_index, (istream, ostream_index)) in ictx
+        .streams()
+        .filter_map(|s| {
+            let medium = s.parameters().medium();
+            if medium == ffmpeg::media::Type::Video || medium == ffmpeg::media::Type::Audio {
+                Some((
+                    s.index(),
+                    (
+                        s,
+                        octx.add_stream(ffmpeg::encoder::find(ffmpeg::codec::Id::None))
+                            .unwrap()
+                            .index(),
+                    ),
+                ))
+            } else {
+                None // Ignore subtitles/data for this simple example
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+    {
+        let istream_params = istream.parameters();
+        let medium = istream_params.medium();
+
+        if medium == ffmpeg::media::Type::Video {
+            // -- VIDEO TRANSCODER (H.264) --
+
+            // Decoder
+            let context_decoder = ffmpeg::codec::context::Context::from_parameters(istream_params)?;
+            let mut decoder = context_decoder.decoder().video()?;
+
+            // Encoder (H.264)
+            let global_header = octx
+                .format()
+                .flags()
+                .contains(ffmpeg::format::flag::Flags::GLOBAL_HEADER);
+            let codec =
+                ffmpeg::encoder::find(ffmpeg::codec::Id::H264).expect("H.264 codec not found");
+            let mut context_encoder = ffmpeg::codec::context::Context::new_with_codec(codec);
+            let mut encoder = context_encoder.encoder().video()?;
+
+            // Set Encoder Parameters
+            encoder.set_height(decoder.height());
+            encoder.set_width(decoder.width());
+            encoder.set_aspect_ratio(decoder.aspect_ratio());
+            encoder.set_format(ffmpeg::format::Pixel::YUV420P); // Standard for MP4 compatibility
+            encoder.set_frame_rate(decoder.frame_rate());
+            encoder.set_time_base(istream.time_base()); // Use input timebase
+
+            if global_header {
+                encoder.set_flags(ffmpeg::codec::flag::Flags::GLOBAL_HEADER);
+            }
+
+            // Optional: Set H.264 specific options (presets)
+            let mut opts = ffmpeg::Dictionary::new();
+            opts.set("preset", "medium");
+            let encoder = encoder.open_with(opts)?;
+
+            // Update output stream parameters to match encoder
+            let mut ostream = octx.stream_mut(ostream_index).unwrap();
+            ostream.set_parameters(&encoder);
+
+            streamer.insert(
+                stream_index,
+                Transcoder::Video(decoder, encoder, ostream_index, istream.time_base()),
+            );
+        } else if medium == ffmpeg::media::Type::Audio {
+            // -- AUDIO TRANSCODER (AAC) --
+
+            let context_decoder = ffmpeg::codec::context::Context::from_parameters(istream_params)?;
+            let mut decoder = context_decoder.decoder().audio()?;
+
+            let global_header = octx
+                .format()
+                .flags()
+                .contains(ffmpeg::format::flag::Flags::GLOBAL_HEADER);
+            let codec = ffmpeg::encoder::find(ffmpeg::codec::Id::AAC).expect("AAC codec not found");
+            let mut context_encoder = ffmpeg::codec::context::Context::new_with_codec(codec);
+            let mut encoder = context_encoder.encoder().audio()?;
+
+            // Set Encoder Parameters
+            encoder.set_rate(decoder.rate() as i32);
+            // ffmpeg-next handling of channel layouts can be tricky; using default/stereo is safest for a mimic
+            encoder.set_channel_layout(ffmpeg::channel_layout::ChannelLayout::STEREO);
+            encoder.set_format(ffmpeg::format::Sample::F32(
+                ffmpeg::format::sample::Type::Planar,
+            )); // AAC usually likes planar floats
+            encoder.set_time_base(ffmpeg::Rational::new(1, decoder.rate() as i32));
+
+            if global_header {
+                encoder.set_flags(ffmpeg::codec::flag::Flags::GLOBAL_HEADER);
+            }
+
+            let encoder = encoder.open()?;
+
+            // Update output stream parameters
+            let mut ostream = octx.stream_mut(ostream_index).unwrap();
+            ostream.set_parameters(&encoder);
+
+            streamer.insert(
+                stream_index,
+                Transcoder::Audio(decoder, encoder, ostream_index, istream.time_base()),
+            );
+        }
+    }
+
+    // 4. Write Header
+    octx.write_header()?;
+
+    // 5. Transcoding Loop
+    for (stream, mut packet) in ictx.packets() {
+        if let Some(transcoder) = streamer.get_mut(&stream.index()) {
+            match transcoder {
+                Transcoder::Video(decoder, encoder, out_index, in_time_base) => {
+                    // Decode
+                    decoder.send_packet(&packet)?;
+                    let mut decoded_frame = ffmpeg::frame::Video::empty();
+                    while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                        // Rescale timestamps for the frame (Input -> Encoder)
+                        let pts = decoded_frame.pts();
+                        decoded_frame.set_pts(pts); // Often needs rescaling here if bases differ significantly
+
+                        // Encode
+                        encoder.send_frame(&decoded_frame)?;
+                        let mut encoded_packet = ffmpeg::Packet::empty();
+                        while encoder.receive_packet(&mut encoded_packet).is_ok() {
+                            encoded_packet.set_stream(*out_index);
+                            // Rescale Packet Timestamp (Encoder -> Output)
+                            encoded_packet.rescale_ts(
+                                *in_time_base,
+                                octx.stream(*out_index).unwrap().time_base(),
+                            );
+                            encoded_packet.write_interleaved(&mut octx)?;
+                        }
+                    }
+                }
+                Transcoder::Audio(decoder, encoder, out_index, in_time_base) => {
+                    decoder.send_packet(&packet)?;
+                    let mut decoded_frame = ffmpeg::frame::Audio::empty();
+                    while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                        encoder.send_frame(&decoded_frame)?;
+                        let mut encoded_packet = ffmpeg::Packet::empty();
+                        while encoder.receive_packet(&mut encoded_packet).is_ok() {
+                            encoded_packet.set_stream(*out_index);
+                            encoded_packet.rescale_ts(
+                                *in_time_base,
+                                octx.stream(*out_index).unwrap().time_base(),
+                            );
+                            encoded_packet.write_interleaved(&mut octx)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Flush Encoders
+    for (_, transcoder) in streamer.iter_mut() {
+        match transcoder {
+            Transcoder::Video(_, encoder, out_index, in_time_base) => {
+                encoder.send_eof()?;
+                let mut encoded_packet = ffmpeg::Packet::empty();
+                while encoder.receive_packet(&mut encoded_packet).is_ok() {
+                    encoded_packet.set_stream(*out_index);
+                    encoded_packet
+                        .rescale_ts(*in_time_base, octx.stream(*out_index).unwrap().time_base());
+                    encoded_packet.write_interleaved(&mut octx)?;
+                }
+            }
+            Transcoder::Audio(_, encoder, out_index, in_time_base) => {
+                encoder.send_eof()?;
+                let mut encoded_packet = ffmpeg::Packet::empty();
+                while encoder.receive_packet(&mut encoded_packet).is_ok() {
+                    encoded_packet.set_stream(*out_index);
+                    encoded_packet
+                        .rescale_ts(*in_time_base, octx.stream(*out_index).unwrap().time_base());
+                    encoded_packet.write_interleaved(&mut octx)?;
+                }
+            }
+        }
+    }
+
+    // 7. Write Trailer
+    octx.write_trailer()?;
+
+    Ok(())
+}
 
 fn get_stream_response(
     request: http::Request<Vec<u8>>,
@@ -157,6 +379,7 @@ fn random_boundary() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    ffmpeg::init().expect("ffmpeg libraries failed to initialize.");
     tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol("stream", move |ctx, request, responder| {
             match get_stream_response(request) {
@@ -177,14 +400,7 @@ pub fn run() {
                         if std::fs::exists("./v.mp4").unwrap() {
                             std::fs::remove_file("./v.mp4").unwrap();
                         }
-                        std::process::Command::new("ffmpeg")
-                            .arg("-i")
-                            .arg(paths[0].clone())
-                            .arg("./v.mp4")
-                            .spawn()
-                            .unwrap()
-                            .wait()
-                            .unwrap();
+                        convert_to_mp4(&paths[0], "./v.mp4").unwrap();
                     }
                 }
                 _ => {}
